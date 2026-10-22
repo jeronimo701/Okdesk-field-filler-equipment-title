@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Okdesk: шаблоны и префикс оборудования в теме
 // @namespace    https://shtrih-m.okdesk.ru/
-// @version      1.7.60
+// @version      1.7.61
 // @description  Поля заявки, шаблоны, статусы, передача ответственного и префикс оборудования в теме через Okdesk API.
 // @match        https://okdesk.ru/*
 // @match        https://*.okdesk.ru/*
@@ -15,8 +15,8 @@
 // @connect      *
 // @author       Jeronimo701
 // @license      LicenseRef-Jeronimo701-Personal-Use-1.0
-// @updateURL    https://gist.githubusercontent.com/jeronimo701/6f14c6febdf0859a9b95e2e8b3af6896/raw/Okdesk_field_filler_equipment_title.user.js
-// @downloadURL  https://gist.githubusercontent.com/jeronimo701/6f14c6febdf0859a9b95e2e8b3af6896/raw/Okdesk_field_filler_equipment_title.user.js
+// @updateURL    none
+// @homepageURL  https://github.com/jeronimo701/Okdesk-field-filler-equipment-title
 // ==/UserScript==
 
 (function () {
