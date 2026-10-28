@@ -4,7 +4,8 @@
   "source_commit": "274f17b1722e83ead65315fac59dd4c3e0cfd3f9",
   "source_tree": "4f56830a1e6b99bfe3b899e09d72b966a17d5d7a",
   "destination": "https://github.com/jeronimo701/Okdesk-field-filler-equipment-title",
-  "private": true,
+  "private": false,
+  "made_public_on": "2026-10-28",
   "history_preserved": true,
   "old_gist_to_be_deleted_after_verification": true
 }
