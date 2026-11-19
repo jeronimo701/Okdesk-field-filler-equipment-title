@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Okdesk: шаблоны и префикс оборудования в теме
 // @namespace    https://shtrih-m.okdesk.ru/
-// @version      1.7.62
+// @version      1.7.64
 // @description  Поля заявки, шаблоны, статусы, передача ответственного и префикс оборудования в теме через Okdesk API.
 // @match        https://okdesk.ru/*
 // @match        https://*.okdesk.ru/*
@@ -31,6 +31,7 @@
         sparePartCode: '0020',
     };
     const RELOAD_AFTER_UPDATE_KEY = `reload_after_update_${location.host}`;
+    const HIDE_ERROR_BANNERS_KEY = `hide_error_banners_${location.host}`;
     const SCRIPT_THEME_KEY = `okdesk_script_theme_${location.host}`;
     const MOBILE_VIEW_KEY = `okdesk_mobile_view_${location.host}`;
     const MOBILE_TABS_KEY = `okdesk_mobile_tabs_${location.host}`;
@@ -156,9 +157,13 @@
     let equipmentTitleNormalizationAttempts = 0;
     let equipmentTitleNormalizationCompleted = false;
     let equipmentTitleNormalizationRetryAt = 0;
+    let manualEquipmentTitleInFlight = false;
 
     const themeStyle = document.createElement('style');
     themeStyle.textContent = `
+        :root[data-okdesk-hide-error-banners="true"] .ant-alert.ant-alert-error.ant-alert-banner[role="alert"] {
+            display:none!important;
+        }
         :root {
             --okdesk-script-surface:#1d2630; --okdesk-script-raised:#26323f;
             --okdesk-script-field:#17212b; --okdesk-script-search:#141c24; --okdesk-script-tooltip:#101820;
@@ -217,6 +222,11 @@
     }
 
     applyScriptTheme();
+    applyErrorBannerVisibility();
+
+    function applyErrorBannerVisibility() {
+        document.documentElement.dataset.okdeskHideErrorBanners = String(GM_getValue(HIDE_ERROR_BANNERS_KEY, true));
+    }
 
     if (!GM_getValue(API_TOKEN_KEY, '') && GM_getValue(LEGACY_API_TOKEN_KEY, '')) {
         GM_setValue(API_TOKEN_KEY, GM_getValue(LEGACY_API_TOKEN_KEY, ''));
@@ -780,6 +790,7 @@
                 const { name } = state.issue ? await getIssueEquipmentName(state.issue) : { name: '' };
                 setIssueTitleFromSelection(state.issueId, text, name);
             });
+            add('Добавить оборудование в тему', () => addEquipmentToIssueTitleFromSelection(state.issueId, text));
             add('Сделать шаблоном', () => openTemplateFromSelection(text));
             body.appendChild(mobileNode('div', 'm-sheet-label', 'Поля заявки'));
             add('Записать в «Заводской номер»', () => updateParameter(state.issueId, FIELD.serialNumber, text, 'Заводской номер'));
@@ -1920,7 +1931,7 @@
             equipmentTitleNormalizationCompleted = false;
             equipmentTitleNormalizationRetryAt = 0;
         }
-        if (equipmentTitleNormalizationCompleted || equipmentTitleNormalizationInFlight) return;
+        if (equipmentTitleNormalizationCompleted || equipmentTitleNormalizationInFlight || manualEquipmentTitleInFlight) return;
         if (Date.now() < equipmentTitleNormalizationRetryAt) return;
         if (!isTitleNormalizationEnabled()) return;
         if (!GM_getValue(API_TOKEN_KEY, '')) return;
@@ -1963,6 +1974,7 @@
                 showToast('Тема не дополнена: итоговое название длиннее 500 символов.', true);
                 return;
             }
+            if (manualEquipmentTitleInFlight || getIssueId() !== issueId) return;
             await apiRequest(`/issues/${issueId}`, {
                 method: 'PATCH',
                 body: { issue: { title: updatedTitle } },
@@ -1971,7 +1983,7 @@
             if (isTitleNormalizationOnceEnabled()) markTitleNormalizationApplied(issueId);
             showToast('Тема заявки дополнена.');
             window.setTimeout(() => {
-                if (getIssueId() === issueId) location.reload();
+                if (!manualEquipmentTitleInFlight && getIssueId() === issueId) location.reload();
             }, 550);
         } catch (error) {
             console.warn('Okdesk equipment title:', error);
@@ -2067,6 +2079,7 @@
                     <button data-action="delete">Удалить токен</button>
                 </div>
                 <label class="okdesk-settings-check"><input id="okdesk-settings-reload" type="checkbox"> Обновлять страницу после изменения</label>
+                <label class="okdesk-settings-check"><input id="okdesk-settings-hide-error-banners" type="checkbox"> Скрывать баннеры ошибок</label>
                 <label class="okdesk-settings-token-label">Тема интерфейса скрипта<br>
                     <select id="okdesk-settings-theme">
                         <option value="auto">Автоматически, как в Okdesk</option>
@@ -2113,6 +2126,7 @@
         tokenInput.value = currentToken;
         Object.assign(tokenInput.style, { width: '100%', boxSizing: 'border-box', marginTop: '6px', padding: '8px' });
         box.querySelector('#okdesk-settings-reload').checked = reloadAfterUpdate;
+        box.querySelector('#okdesk-settings-hide-error-banners').checked = GM_getValue(HIDE_ERROR_BANNERS_KEY, true);
         const themeInput = box.querySelector('#okdesk-settings-theme');
         themeInput.value = GM_getValue(SCRIPT_THEME_KEY, 'auto');
         Object.assign(themeInput.style, { width: '100%', boxSizing: 'border-box', marginTop: '6px', padding: '8px', background: 'var(--okdesk-script-raised)', color: 'var(--okdesk-script-text)', border: '1px solid var(--okdesk-script-border-input)', borderRadius: '4px' });
@@ -2121,7 +2135,7 @@
         Object.assign(quickReplyPanelPositionInput.style, { width: '100%', boxSizing: 'border-box', marginTop: '6px', padding: '8px', background: 'var(--okdesk-script-raised)', color: 'var(--okdesk-script-text)', border: '1px solid var(--okdesk-script-border-input)', borderRadius: '4px' });
         Object.assign(box.querySelector('.okdesk-settings-token-actions').style, { display: 'flex', justifyContent: 'flex-end', marginTop: '6px' });
         Object.assign(box.querySelector('[data-action="delete"]').style, { border: '0', padding: '4px 0', background: 'transparent', color: 'var(--okdesk-script-danger)', cursor: 'pointer' });
-        Object.assign(box.querySelector('.okdesk-settings-check').style, { display: 'block', marginTop: '12px' });
+        box.querySelectorAll('.okdesk-settings-check').forEach((label) => Object.assign(label.style, { display: 'block', marginTop: '12px' }));
         Object.assign(box.querySelector('.okdesk-settings-actions').style, { display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '20px', paddingTop: '14px', borderTop: '1px solid var(--okdesk-script-border-soft)' });
         Object.assign(box.querySelector('[data-action="save"]').style, { padding: '7px 12px', border: '1px solid #4d9b87', borderRadius: '4px', background: 'var(--okdesk-script-primary-alt)', color: 'var(--okdesk-script-text)', cursor: 'pointer' });
         Object.assign(box.querySelector('[data-action="cancel"]').style, { padding: '7px 12px', border: '1px solid var(--okdesk-script-border-input)', borderRadius: '4px', background: 'transparent', color: 'var(--okdesk-script-text)', cursor: 'pointer' });
@@ -2157,6 +2171,8 @@
             if (action === 'save') {
                 GM_setValue(API_TOKEN_KEY, tokenInput.value.trim());
                 GM_setValue(RELOAD_AFTER_UPDATE_KEY, box.querySelector('#okdesk-settings-reload').checked);
+                GM_setValue(HIDE_ERROR_BANNERS_KEY, box.querySelector('#okdesk-settings-hide-error-banners').checked);
+                applyErrorBannerVisibility();
                 GM_setValue(SCRIPT_THEME_KEY, themeInput.value);
                 applyScriptTheme();
                 GM_setValue(QUICK_REPLY_PANEL_POSITION_KEY, quickReplyPanelPositionInput.value);
@@ -4050,6 +4066,7 @@
             <button data-action="open-portal">Открыть на портале POScenter</button>
             <div class="okdesk-menu-divider"><span>Тема заявки</span></div>
             <button data-action="set-title">Сделать темой заявки</button>
+            <button data-action="add-equipment-title">Добавить оборудование в тему</button>
             <div class="okdesk-menu-divider"><span>Шаблоны</span></div>
             <button data-action="make-template">Сделать шаблоном</button>
             <div class="okdesk-menu-divider"><span>Поля заявки</span></div>
@@ -4095,6 +4112,8 @@
                     openOnPoscenterPortal(selectedText);
                 } else if (action === 'set-title') {
                     await setIssueTitleFromSelection(issueId, selectedText);
+                } else if (action === 'add-equipment-title') {
+                    await addEquipmentToIssueTitleFromSelection(issueId, selectedText);
                 } else if (action === 'insert-quote') {
                     appendFormattedTextToComment(selectedText, 'quote');
                 } else if (action === 'insert-spoiler') {
@@ -4152,6 +4171,46 @@
         } catch (error) {
             console.error('Okdesk selected title:', error);
             showToast(`Не удалось изменить тему: ${error.message}`, true);
+        }
+    }
+
+    async function addEquipmentToIssueTitleFromSelection(issueId, selectedText) {
+        const equipmentName = String(selectedText || '').replace(/\s+/g, ' ').trim();
+        if (!equipmentName || !issueId || manualEquipmentTitleInFlight) return;
+        manualEquipmentTitleInFlight = true;
+        try {
+            // Finish an already-running automatic write before reading the current title.
+            const deadline = Date.now() + 30000;
+            while (equipmentTitleNormalizationInFlight) {
+                if (Date.now() >= deadline) throw new Error('дождитесь завершения автоматического изменения темы и повторите действие');
+                await new Promise((resolve) => window.setTimeout(resolve, 50));
+            }
+            if (getIssueId() !== issueId) return;
+            const issue = await apiRequest(`/issues/${issueId}`);
+            const title = String(issue?.title || '').trim();
+            if (!title) throw new Error('не удалось прочитать текущую тему заявки');
+            const domainLabel = await getIssueDomainLabel(issue);
+            const updatedTitle = buildEquipmentIssueTitle(title, equipmentName, domainLabel);
+            if (normalizeTitlePrefix(updatedTitle) === normalizeTitlePrefix(title)) {
+                showToast('Это оборудование уже указано в теме заявки.');
+                return;
+            }
+            if (updatedTitle.length > 500) throw new Error('итоговое название длиннее 500 символов');
+            if (getIssueId() !== issueId) return;
+            await apiRequest(`/issues/${issueId}`, {
+                method: 'PATCH',
+                body: { issue: { title: updatedTitle } },
+            });
+            equipmentTitleNormalizationCompleted = true;
+            showToast('Оборудование добавлено в тему заявки.');
+            window.setTimeout(() => {
+                if (getIssueId() === issueId) location.reload();
+            }, 550);
+        } catch (error) {
+            console.error('Okdesk selected equipment title:', error);
+            showToast(`Не удалось добавить оборудование в тему: ${error.message}`, true);
+        } finally {
+            manualEquipmentTitleInFlight = false;
         }
     }
 
