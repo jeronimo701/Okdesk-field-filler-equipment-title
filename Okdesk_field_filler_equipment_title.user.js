@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Okdesk: шаблоны и префикс оборудования в теме
 // @namespace    https://shtrih-m.okdesk.ru/
-// @version      1.7.64
+// @version      1.7.65
 // @description  Поля заявки, шаблоны, статусы, передача ответственного и префикс оборудования в теме через Okdesk API.
 // @match        https://okdesk.ru/*
 // @match        https://*.okdesk.ru/*
@@ -2415,6 +2415,7 @@
                 return;
             }
             closeTemplateEmojiPicker();
+            ensureContextMenuHoverStyle();
             const panel = document.createElement('div');
             panel.id = 'okdesk-template-emoji-picker';
             panel.setAttribute('role', 'dialog');
@@ -2431,8 +2432,6 @@
                 choice.type = 'button';
                 choice.textContent = emoji ? `${emoji} ${label}` : '✕ Без значка';
                 Object.assign(choice.style, { width: '100%', minHeight: '32px', padding: '5px 7px', border: '0', borderRadius: '4px', background: 'transparent', color: 'var(--okdesk-script-text)', textAlign: 'left', cursor: 'pointer' });
-                choice.addEventListener('mouseenter', () => { choice.style.background = 'var(--okdesk-script-highlight)'; });
-                choice.addEventListener('mouseleave', () => { choice.style.background = 'transparent'; });
                 choice.addEventListener('click', () => choose(emoji));
                 return choice;
             };
@@ -3836,8 +3835,11 @@
         const style = document.createElement('style');
         style.id = 'okdesk-context-hover-style';
         style.textContent = `
+            #okdesk-template-emoji-picker button { background: transparent !important; user-select: none; }
+            #okdesk-template-emoji-picker button:hover,
             #okdesk-template-menu button:hover,
             #okdesk-field-filler-menu button:hover { background: var(--okdesk-script-highlight) !important; }
+            #okdesk-template-emoji-picker button:focus-visible,
             #okdesk-template-menu button:focus-visible,
             #okdesk-field-filler-menu button:focus-visible { outline: 2px solid #83baff; outline-offset: -2px; }
             #okdesk-template-menu input { user-select: text; }
