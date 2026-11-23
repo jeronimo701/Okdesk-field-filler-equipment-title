@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Okdesk: шаблоны и префикс оборудования в теме
 // @namespace    https://shtrih-m.okdesk.ru/
-// @version      1.7.65
+// @version      1.7.66
 // @description  Поля заявки, шаблоны, статусы, передача ответственного и префикс оборудования в теме через Okdesk API.
 // @match        https://okdesk.ru/*
 // @match        https://*.okdesk.ru/*
@@ -32,6 +32,9 @@
     };
     const RELOAD_AFTER_UPDATE_KEY = `reload_after_update_${location.host}`;
     const HIDE_ERROR_BANNERS_KEY = `hide_error_banners_${location.host}`;
+    const RETURN_TO_LIST_AFTER_SEND_KEY = `return_to_list_after_send_${location.host}`;
+    const ISSUE_LIST_LOCATION_KEY = 'okdesk_issue_list_location';
+    const ISSUE_LIST_RESTORE_KEY = 'okdesk_issue_list_restore';
     const SCRIPT_THEME_KEY = `okdesk_script_theme_${location.host}`;
     const MOBILE_VIEW_KEY = `okdesk_mobile_view_${location.host}`;
     const MOBILE_TABS_KEY = `okdesk_mobile_tabs_${location.host}`;
@@ -140,6 +143,7 @@
     let sendHint;
     let pendingStatusChange = false;
     let queuedStatusCode = '';
+    let queuedSendOptions = null;
     let videoAttachmentIssueId = null;
     let videoAttachments = new Map();
     let attachmentLinkFiles = new Map();
@@ -223,6 +227,7 @@
 
     applyScriptTheme();
     applyErrorBannerVisibility();
+    trackIssueListLocation();
 
     function applyErrorBannerVisibility() {
         document.documentElement.dataset.okdeskHideErrorBanners = String(GM_getValue(HIDE_ERROR_BANNERS_KEY, true));
@@ -4781,6 +4786,75 @@
         link.remove();
     }
 
+    function asIssueListUrl(value) {
+        try {
+            const url = new URL(value, location.origin);
+            if (url.origin !== location.origin || url.username || url.password || !/^\/issues\/?$/.test(url.pathname)) return '';
+            return `${url.pathname}${url.search}${url.hash}`;
+        } catch (_) { return ''; }
+    }
+
+    function getIssueListDestination() {
+        let saved = null;
+        try { saved = JSON.parse(sessionStorage.getItem(ISSUE_LIST_LOCATION_KEY) || 'null'); } catch (_) {}
+        const referrer = document.referrer ? asIssueListUrl(document.referrer) : '';
+        const url = referrer || asIssueListUrl(saved?.url || '') || '/issues';
+        return { url, x: saved?.url === url ? Number(saved.x) || 0 : 0, y: saved?.url === url ? Number(saved.y) || 0 : 0 };
+    }
+
+    function trackIssueListLocation() {
+        const remember = () => {
+            const url = asIssueListUrl(location.href);
+            if (!url) return;
+            try {
+                sessionStorage.setItem(ISSUE_LIST_LOCATION_KEY, JSON.stringify({ url, x: window.scrollX, y: window.scrollY }));
+            } catch (_) {}
+        };
+        remember();
+        document.addEventListener('click', remember, true);
+        document.addEventListener('contextmenu', remember, true);
+        window.addEventListener('pagehide', remember);
+        window.addEventListener('popstate', remember);
+        window.addEventListener('hashchange', remember);
+        let scrollTimer;
+        window.addEventListener('scroll', () => {
+            clearTimeout(scrollTimer);
+            scrollTimer = window.setTimeout(remember, 180);
+        }, { passive: true });
+        let restore;
+        try { restore = JSON.parse(sessionStorage.getItem(ISSUE_LIST_RESTORE_KEY) || 'null'); } catch (_) {}
+        if (!restore || restore.url !== asIssueListUrl(location.href)) return;
+        try { sessionStorage.removeItem(ISSUE_LIST_RESTORE_KEY); } catch (_) {}
+        if (Date.now() - restore.at > 5 * 60 * 1000) return;
+        let attempts = 0;
+        let cancelled = false;
+        const cancel = () => { cancelled = true; };
+        window.addEventListener('wheel', cancel, { passive: true });
+        window.addEventListener('pointerdown', cancel);
+        const applyScroll = () => {
+            const ready = document.documentElement.scrollHeight >= (Number(restore.y) || 0) + window.innerHeight;
+            if (!cancelled && !ready && ++attempts < 30) { window.setTimeout(applyScroll, 150); return; }
+            window.removeEventListener('wheel', cancel);
+            window.removeEventListener('pointerdown', cancel);
+            if (!cancelled) window.scrollTo(Number(restore.x) || 0, Number(restore.y) || 0);
+        };
+        window.setTimeout(applyScroll, 100);
+    }
+
+    function finishContextCommentSend(issueId, options) {
+        if (options?.returnToList) {
+            window.setTimeout(() => {
+                if (getIssueId() !== issueId) return;
+                const destination = options.destination || getIssueListDestination();
+                const url = asIssueListUrl(destination.url) || '/issues';
+                try { sessionStorage.setItem(ISSUE_LIST_RESTORE_KEY, JSON.stringify({ ...destination, url, at: Date.now() })); } catch (_) {}
+                location.assign(url);
+            }, 700);
+        } else if (GM_getValue(RELOAD_AFTER_UPDATE_KEY, true)) {
+            window.setTimeout(() => { if (getIssueId() === issueId) location.reload(); }, 700);
+        }
+    }
+
     function handleSendContextMenu(event) {
         const control = event.target.closest('button, input[type="submit"], a');
         if (!control || !isCommentSendControl(control)) {
@@ -4808,6 +4882,7 @@
         menu.innerHTML = `
             <button data-status="">Отправить без смены статуса</button>
             ${statusButtons ? `<hr>${statusButtons}` : ''}
+            <label id="okdesk-send-return-label"><input id="okdesk-send-return-to-list" type="checkbox"> <span>Вернуться к списку заявок после отправки</span></label>
             <hr>
             <button data-action="transfer">↪ Отправить сотруднику и сменить ответственного</button>
         `;
@@ -4824,21 +4899,34 @@
             button.addEventListener('click', (event) => {
                 event.preventDefault();
                 event.stopPropagation();
+                const sendOptions = {
+                    returnToList: menu.querySelector('#okdesk-send-return-to-list').checked,
+                    destination: getIssueListDestination(),
+                };
                 if (button.dataset.action === 'transfer') {
-                    window.setTimeout(() => showTransferMenu(x, y, control), 0);
+                    window.setTimeout(() => showTransferMenu(x, y, control, sendOptions), 0);
                     return;
                 }
                 queuedStatusCode = button.dataset.status;
+                queuedSendOptions = sendOptions;
                 hideContextMenu();
                 control.click();
             });
         });
         menu.querySelectorAll('hr').forEach((divider) => { divider.style.borderColor = 'var(--okdesk-script-divider)'; });
+        const returnCheckbox = menu.querySelector('#okdesk-send-return-to-list');
+        returnCheckbox.checked = GM_getValue(RETURN_TO_LIST_AFTER_SEND_KEY, false);
+        returnCheckbox.addEventListener('change', () => GM_setValue(RETURN_TO_LIST_AFTER_SEND_KEY, returnCheckbox.checked));
+        Object.assign(menu.querySelector('#okdesk-send-return-label').style, {
+            display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '10px', color: 'var(--okdesk-script-text)',
+            fontSize: '13px', lineHeight: '1.4', cursor: 'pointer', borderTop: '1px solid var(--okdesk-script-divider)',
+        });
+        Object.assign(returnCheckbox.style, { flexShrink: '0', margin: '2px 0 0' });
         document.body.appendChild(menu);
         keepMenuInViewport(menu, x, y);
     }
 
-    async function showTransferMenu(x, y, control) {
+    async function showTransferMenu(x, y, control, sendOptions = null) {
         hideMenus();
         ensureContextMenuHoverStyle();
         menu = document.createElement('div');
@@ -4870,7 +4958,7 @@
                 employeeButton.addEventListener('click', async () => {
                     list.querySelectorAll('button').forEach((button) => { button.disabled = true; });
                     try {
-                        await sendPrivateCommentAndTransfer(employee, control);
+                        await sendPrivateCommentAndTransfer(employee, control, sendOptions);
                     } catch (error) {
                         showToast(`Не удалось передать заявку: ${error.message}`, true);
                         list.querySelectorAll('button').forEach((button) => { button.disabled = false; });
@@ -4920,7 +5008,7 @@
         return normalizeEmployees(group.employees || []);
     }
 
-    async function sendPrivateCommentAndTransfer(employee, control) {
+    async function sendPrivateCommentAndTransfer(employee, control, sendOptions = null) {
         const issueId = getIssueId();
         if (!issueId) {
             throw new Error('не удалось определить номер заявки');
@@ -4959,9 +5047,7 @@
         });
         clearCommentEditor(control);
         showToast(`Заявка передана сотруднику: ${employee.name}.`);
-        if (GM_getValue(RELOAD_AFTER_UPDATE_KEY, true)) {
-            window.setTimeout(() => location.reload(), 700);
-        }
+        finishContextCommentSend(issueId, sendOptions);
     }
 
     async function handleCommentSend(event) {
@@ -4971,14 +5057,17 @@
         }
 
         const statusCode = queuedStatusCode;
-        if (!statusCode || !hasCommentText()) {
+        queuedStatusCode = '';
+        const sendOptions = queuedSendOptions;
+        queuedSendOptions = null;
+        if ((!statusCode && !sendOptions?.returnToList) || !hasCommentText()) {
             queuedStatusCode = '';
             return;
         }
 
         const token = GM_getValue(API_TOKEN_KEY, '');
         if (!token) {
-            showToast('Статус не изменён: сначала укажите API-токен Okdesk.', true);
+            showToast('Для смены статуса и подтверждения возврата укажите API-токен Okdesk.', true);
             queuedStatusCode = '';
             return;
         }
@@ -4990,22 +5079,20 @@
 
         pendingStatusChange = true;
         const sentAt = Date.now();
-        showToast('Ожидаю успешную отправку комментария для смены статуса.');
+        showToast('Ожидаю подтверждение отправки комментария.');
         try {
             const sent = await waitForNewComment(issueId, token, sentAt);
             if (!sent) {
                 showToast('Комментарий не подтверждён. Статус не изменён.', true);
                 return;
             }
-            await changeStatus(issueId, token, statusCode);
-            showToast('Комментарий отправлен, статус изменён.');
+            if (statusCode && !await isIssueAlreadyInStatus(issueId, statusCode)) await changeStatus(issueId, token, statusCode);
+            showToast(statusCode ? 'Комментарий отправлен, статус установлен.' : 'Комментарий отправлен.');
             queuedStatusCode = '';
-            if (GM_getValue(RELOAD_AFTER_UPDATE_KEY, true)) {
-                window.setTimeout(() => location.reload(), 700);
-            }
+            finishContextCommentSend(issueId, sendOptions);
         } catch (error) {
             console.error('Okdesk status change:', error);
-            showToast('Комментарий отправлен, но сменить статус не удалось. Проверьте права доступа.', true);
+            showToast(`Не удалось подтвердить отправку или установить статус: ${error.message}`, true);
         } finally {
             pendingStatusChange = false;
             queuedStatusCode = '';
@@ -5197,7 +5284,7 @@
             }
             const issue = await response.json();
             const lastCommentAt = Date.parse(issue.comments?.last_at || '');
-            if (Number.isFinite(lastCommentAt) && lastCommentAt >= sentAt - 5000) {
+            if (!hasCommentText() && Number.isFinite(lastCommentAt) && lastCommentAt >= Math.floor(sentAt / 1000) * 1000) {
                 return true;
             }
         }

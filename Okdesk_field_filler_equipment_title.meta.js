@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Okdesk: шаблоны и префикс оборудования в теме
 // @namespace    https://shtrih-m.okdesk.ru/
-// @version      1.7.65
+// @version      1.7.66
 // @description  Поля заявки, шаблоны, статусы, передача ответственного и префикс оборудования в теме через Okdesk API.
 // @match        https://okdesk.ru/*
 // @match        https://*.okdesk.ru/*
