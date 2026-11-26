@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         Okdesk: шаблоны и префикс оборудования в теме
 // @namespace    https://shtrih-m.okdesk.ru/
-// @version      1.7.66
+// @version      1.7.68
 // @description  Поля заявки, шаблоны, статусы, передача ответственного и префикс оборудования в теме через Okdesk API.
 // @match        https://okdesk.ru/*
 // @match        https://*.okdesk.ru/*
+// @match        https://help.kkm.solutions/*
 // @run-at       document-idle
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -2946,17 +2947,17 @@
         }
     }
 
-    function confirmPublicQuickReply(reply, descriptionText) {
+    function confirmPublicQuickReply(reply, descriptionText, sendOptions = null) {
         return new Promise((resolve) => {
             const overlay = document.createElement('div');
             overlay.dataset.okdeskQuickReplyConfirmation = 'true';
             Object.assign(overlay.style, {
                 position: 'fixed', inset: '0', zIndex: '2147483649', display: 'grid', placeItems: 'center',
-                padding: '16px', background: 'rgba(0, 0, 0, .58)', font: '14px Arial, sans-serif',
+                padding: '16px', boxSizing: 'border-box', minWidth: '0', background: 'rgba(0, 0, 0, .58)', font: '14px Arial, sans-serif',
             });
             const dialog = document.createElement('div');
             Object.assign(dialog.style, {
-                width: '390px', maxWidth: '100%', padding: '18px', boxSizing: 'border-box', border: '1px solid var(--okdesk-script-border)',
+                width: sendOptions ? 'min(560px, calc(100vw - 32px))' : 'min(390px, calc(100vw - 32px))', maxWidth: '100%', minWidth: '0', padding: '18px', boxSizing: 'border-box', border: '1px solid var(--okdesk-script-border)',
                 borderRadius: '8px', background: 'var(--okdesk-script-surface)', color: 'var(--okdesk-script-text)', boxShadow: '0 14px 40px rgba(0,0,0,.48)',
             });
             const title = document.createElement('div');
@@ -2966,7 +2967,24 @@
             description.textContent = descriptionText || `Клиент увидит комментарий из кнопки «${reply.title}». Статус заявки изменится на «${getStatusLabel(reply.statusCode)}».`;
             Object.assign(description.style, { margin: '10px 0 0', color: 'var(--okdesk-script-muted-soft)', lineHeight: '1.45' });
             const actions = document.createElement('div');
-            Object.assign(actions.style, { display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '18px' });
+            Object.assign(actions.style, { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: '12px', marginTop: '18px' });
+            if (sendOptions) {
+                const returnLabel = document.createElement('label');
+                Object.assign(returnLabel.style, { display: 'flex', alignItems: 'flex-start', gap: '7px', flex: '1 1 230px', minWidth: '0', fontSize: '12px', lineHeight: '1.4', cursor: 'pointer' });
+                const returnCheckbox = document.createElement('input');
+                returnCheckbox.type = 'checkbox';
+                returnCheckbox.id = 'okdesk-quick-reply-return-to-list';
+                returnCheckbox.checked = sendOptions.returnToList;
+                Object.assign(returnCheckbox.style, { flexShrink: '0', margin: '2px 0 0' });
+                returnCheckbox.addEventListener('change', () => {
+                    sendOptions.returnToList = returnCheckbox.checked;
+                    GM_setValue(RETURN_TO_LIST_AFTER_SEND_KEY, returnCheckbox.checked);
+                });
+                const labelText = document.createElement('span');
+                labelText.textContent = 'Вернуться к списку заявок после отправки';
+                returnLabel.append(returnCheckbox, labelText);
+                actions.appendChild(returnLabel);
+            }
             const cancel = document.createElement('button');
             cancel.type = 'button'; cancel.textContent = 'Отмена';
             Object.assign(cancel.style, { height: '34px', padding: '0 12px', border: '1px solid var(--okdesk-script-border-input)', borderRadius: '4px', background: 'var(--okdesk-script-raised)', color: 'var(--okdesk-script-text)', cursor: 'pointer' });
@@ -2984,7 +3002,10 @@
             cancel.addEventListener('click', () => finish(false));
             confirm.addEventListener('click', () => finish(true));
             overlay.addEventListener('mousedown', (event) => { if (event.target === overlay) finish(false); });
-            actions.append(cancel, confirm);
+            const buttons = document.createElement('div');
+            Object.assign(buttons.style, { display: 'flex', gap: '8px', marginLeft: 'auto', flexShrink: '0' });
+            buttons.append(cancel, confirm);
+            actions.appendChild(buttons);
             dialog.append(title, description, actions);
             overlay.appendChild(dialog);
             document.body.appendChild(overlay);
@@ -2996,7 +3017,8 @@
     async function runQuickReply(reply, panel, issueId = getIssueId()) {
         if (quickReplyInFlight) return;
         if (!issueId) return;
-        if (reply.public !== false && !await confirmPublicQuickReply(reply)) return;
+        const sendOptions = { returnToList: GM_getValue(RETURN_TO_LIST_AFTER_SEND_KEY, false), destination: getIssueListDestination() };
+        if (reply.public !== false && !await confirmPublicQuickReply(reply, undefined, sendOptions)) return;
         quickReplyInFlight = true;
         panel.querySelectorAll('button').forEach((button) => { button.disabled = true; });
         let commentSent = false;
@@ -3024,7 +3046,9 @@
             showToast(statusAlreadySet
                 ? 'Комментарий отправлен.'
                 : `Комментарий отправлен, статус: ${getStatusLabel(reply.statusCode)}.`);
-            if (GM_getValue(RELOAD_AFTER_UPDATE_KEY, true)) {
+            if (sendOptions.returnToList && String(getIssueId()) === String(issueId)) {
+                finishContextCommentSend(issueId, sendOptions);
+            } else if (GM_getValue(RELOAD_AFTER_UPDATE_KEY, true)) {
                 window.setTimeout(() => location.reload(), 700);
             }
             return true;
@@ -4844,14 +4868,14 @@
     function finishContextCommentSend(issueId, options) {
         if (options?.returnToList) {
             window.setTimeout(() => {
-                if (getIssueId() !== issueId) return;
+                if (String(getIssueId()) !== String(issueId)) return;
                 const destination = options.destination || getIssueListDestination();
                 const url = asIssueListUrl(destination.url) || '/issues';
                 try { sessionStorage.setItem(ISSUE_LIST_RESTORE_KEY, JSON.stringify({ ...destination, url, at: Date.now() })); } catch (_) {}
                 location.assign(url);
             }, 700);
         } else if (GM_getValue(RELOAD_AFTER_UPDATE_KEY, true)) {
-            window.setTimeout(() => { if (getIssueId() === issueId) location.reload(); }, 700);
+            window.setTimeout(() => { if (String(getIssueId()) === String(issueId)) location.reload(); }, 700);
         }
     }
 
