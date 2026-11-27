@@ -1,3 +1,5 @@
+![Okdesk-field-filler-equipment-title — обложка проекта](docs/banner.svg)
+
 # Okdesk — шаблоны ответов и помощник по заявкам
 
 **Tampermonkey · 1.7.68 · Jeronimo701**
